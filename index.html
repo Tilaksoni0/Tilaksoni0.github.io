@@ -734,9 +734,25 @@ $$y = \sum_i s_i \cdot E_i(x)$$
 
 <p>The paper's actual importance loss uses $\text{CV}^2$, not raw CV, and this is where I had to sit down and actually differentiate the thing to understand why, because on the surface CV already looked fine to me.</p>
 
+<p>Start from $\text{std}^2 = \frac{1}{N}\sum_j(x_j-\text{mean})^2$ and differentiate both sides, remembering $\partial\,\text{mean}/\partial x_i = 1/N$:</p>
+
+<div class="eq-block">
+  <div class="eq-label">std, before simplifying</div>
+  $$2\,\text{std}\cdot\frac{\partial\,\text{std}}{\partial x_i} = \frac{2}{N}\left[(x_i-\text{mean})\left(1-\frac1N\right) - \frac1N\sum_{j\neq i}(x_j-\text{mean})\right]$$
+</div>
+
+<p>That bracketed second piece looks messy, but the deviations from the mean always sum to zero across the whole set, $\sum_j (x_j-\text{mean}) = 0$, always, by definition of the mean. Once you fold that identity in, the $\left(1-\frac1N\right)$ term and the leftover $-\frac1N\sum_{j\neq i}$ term collapse into a single clean $\frac1N$:</p>
+
+<div class="eq-block">
+  <div class="eq-label">std, after the sum-to-zero identity</div>
+  $$\frac{\partial\,\text{std}}{\partial x_i} = \frac{x_i - \text{mean}}{N\cdot\text{std}}$$
+</div>
+
+<p>Then CV's derivative falls out from the quotient rule, $\text{CV}=\text{std}/\text{mean}$:</p>
+
 <div class="eq-block">
   <div class="eq-label">differentiating CV directly</div>
-  $$\frac{\partial \, \text{CV}}{\partial x_i} = \frac{2(x_i - \text{mean})}{\text{mean} \cdot \text{std}} \cdot \left(1 - \frac{1}{N}\right) \;-\; \frac{\text{std}}{\text{mean}^2}\cdot\frac{1}{N}$$
+  $$\frac{\partial \, \text{CV}}{\partial x_i} = \frac{x_i - \text{mean}}{N \cdot \text{mean} \cdot \text{std}} \;-\; \frac{\text{std}}{N \cdot \text{mean}^2}$$
 </div>
 
 <p>Look at where <code>std</code> sits in that expression, in the <em>denominator</em>. That's the problem. As the distribution approaches perfect balance, <code>std → 0</code>, and this derivative blows up: division by a quantity heading to zero. Right exactly at the point we want the optimizer to settle into, perfect balance, the gradient is either undefined or numerically explodes into floating point garbage. That's a nasty place to have a singularity, because it's precisely the target you're trying to reach.</p>
@@ -745,10 +761,10 @@ $$y = \sum_i s_i \cdot E_i(x)$$
 
 <div class="eq-block">
   <div class="eq-label">the std cancels</div>
-  $$\frac{\partial \, \text{CV}^2}{\partial x_i} = 2 \cdot \text{CV} \cdot \frac{\partial \, \text{CV}}{\partial x_i} = 2 \cdot \frac{\text{std}}{\text{mean}} \cdot \frac{1}{\text{std}}\cdot(\ldots)$$
+  $$\frac{\partial \, \text{CV}^2}{\partial x_i} = 2\,\text{CV}\cdot\frac{\partial \, \text{CV}}{\partial x_i} = 2\cdot\frac{\text{std}}{\text{mean}}\cdot\left(\frac{x_i-\text{mean}}{N\cdot\text{mean}\cdot\text{std}} - \frac{\text{std}}{N\cdot\text{mean}^2}\right)$$
 </div>
 
-<p>The extra factor of <code>std</code> from the outer chain-rule term cancels the <code>std</code> sitting in the denominator of $\partial\text{CV}/\partial x_i$. What's left is finite and well-behaved everywhere, including exactly at perfect balance. Squaring isn't cosmetic here, it's the thing that repairs a genuine non-differentiability at the point that matters most.</p>
+<p>The <code>std</code> in the denominator of $\partial\text{CV}/\partial x_i$ meets the extra <code>std</code> that the outer chain-rule factor of $\text{CV}=\text{std}/\text{mean}$ brings in. In the first term they cancel completely, leaving $2(x_i-\text{mean})/(N\cdot\text{mean}^2)$, no <code>std</code> anywhere, finite everywhere. In the second term you're left with <code>std²</code> instead of <code>std</code> in the numerator, and a squared quantity going to zero is perfectly smooth, it just approaches $0$, it doesn't blow up or leave anything undefined. Either way, nothing in $\partial\text{CV}^2/\partial x_i$ divides by <code>std</code> anymore. Squaring isn't cosmetic here, it's the thing that repairs a genuine non-differentiability at the point that matters most.</p>
 
 <figure class="scan">
   <img src="assets/page-04.png" alt="handwritten page deriving the reason CV squared is used, with cancellation shown">
