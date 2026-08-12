@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>An intuitive walkthrough of the noisy top-k MoE gate</title>
+<meta name="description" content="A from-scratch derivation of Noisy Top-k Gating, expert importance, the coefficient of variation, and load balancing, from Shazeer et al. (2017).">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js" onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});"></script>
+<style>
+
+:root{
+  --ink: #1a1a1a;
+  --gray: #666;
+  --gray-light: #999;
+  --rule: #e3e3e3;
+  --blue: #4183c4;
+  --code-bg: #f6f6f6;
+  --paper-tint: #fafafa;
+}
+
+*{ box-sizing: border-box; }
+html{ scroll-behavior: smooth; }
+
+body{
+  margin:0;
+  background: #ffffff;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 19px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- topbar, like the RSS-icon masthead ---------- */
+.topbar{
+  border-bottom: 1px solid var(--rule);
+}
+.topbar-inner{
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap: 14px;
+  text-decoration:none;
+  color: var(--ink);
+}
+.brand .icon{
+  width: 40px; height: 40px;
+  border-radius: 8px;
+  overflow: hidden;
+  display:flex; align-items:center; justify-content:center;
+  flex-shrink:0;
+}
+.brand .icon svg{ width:22px; height:22px; }
+.brand .name{
+  font-family: Georgia, serif;
+  font-size: 24px;
+  color: #3a3a3a;
+}
+.topbar nav a{
+  color: #999;
+  text-decoration:none;
+  font-size: 17px;
+  font-family: Georgia, serif;
+}
+.topbar nav a:hover{ color: var(--blue); }
+
+/* ---------- article shell ---------- */
+.page{
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 100px;
+}
+
+h1.title{
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: 44px;
+  line-height: 1.18;
+  margin: 0 0 14px;
+  color: var(--ink);
+}
+
+.meta{
+  color: var(--gray-light);
+  font-size: 17px;
+  margin: 0 0 40px;
+}
+
+.page p{ margin: 0 0 24px; }
+
+.page h2{
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: 32px;
+  margin: 56px 0 22px;
+  color: var(--ink);
+}
+.page h2 .num{
+  color: var(--gray-light);
+  font-size: 19px;
+  font-weight: 400;
+  margin-right: 10px;
+}
+
+.page h3{
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-style: normal;
+  font-size: 22px;
+  margin: 34px 0 14px;
+  color: var(--ink);
+}
+
+.page a{ color: var(--blue); text-decoration: none; }
+.page a:hover{ text-decoration: underline; }
+
+strong{ color: var(--ink); font-weight: 700; }
+
+code, .mono{
+  font-family: Consolas, Menlo, 'Courier New', monospace;
+  font-size: 0.85em;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #c0341d;
+}
+pre{
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-family: Consolas, Menlo, 'Courier New', monospace;
+  font-size: 14.5px;
+  line-height: 1.55;
+  margin: 26px 0;
+}
+pre code{ background: none; padding: 0; color: var(--ink); }
+
+blockquote.pull{
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: var(--gray);
+  border-left: 3px solid var(--rule);
+  padding: 4px 0 4px 22px;
+  margin: 32px 0;
+  font-size: 21px;
+  line-height: 1.5;
+}
+
+ul, ol{ margin: 0 0 24px; padding-left: 28px; }
+li{ margin-bottom: 8px; }
+
+hr.rule{
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 48px 0;
+}
+
+/* ---------- margin notes, folded inline on narrow layout ---------- */
+.aside{
+  background: var(--paper-tint);
+  border-left: 3px solid var(--rule);
+  padding: 14px 20px;
+  margin: 26px 0;
+  font-size: 16.5px;
+  color: var(--gray);
+}
+.aside .tag{ color: var(--ink); font-weight: 700; }
+
+/* ---------- math block ---------- */
+.eq-block{
+  background: var(--paper-tint);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 20px 24px;
+  margin: 28px 0;
+  overflow-x: auto;
+}
+.eq-label{
+  font-size: 13px;
+  color: var(--gray-light);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  font-family: Georgia, serif;
+  font-style: italic;
+}
+
+/* ---------- checkpoint / expandable ---------- */
+.checkpoint{
+  margin: 30px 0;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.checkpoint summary{
+  cursor: pointer;
+  padding: 13px 18px;
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 16px;
+  list-style: none;
+  background: var(--paper-tint);
+}
+.checkpoint summary::-webkit-details-marker{ display:none; }
+.checkpoint summary::before{ content: "+ "; color: var(--blue); }
+.checkpoint[open] summary::before{ content: "\2212 "; }
+.checkpoint .body{ padding: 16px 20px 18px; font-size: 17px; }
+
+/* ---------- mini gate example ---------- */
+.mini-example{
+  max-width: 420px;
+  margin: 28px 0;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 14.5px;
+}
+.score-row{ display:flex; justify-content:space-between; padding:10px 16px; border-bottom:1px solid var(--rule); }
+.score-row:last-child{ border-bottom:0; }
+.score-row.selected{ background: #eef4fb; }
+.score-row.selected b{ color: var(--blue); }
+.score-row.muted{ color: var(--gray-light); }
+
+/* ---------- feedback loop ---------- */
+.feedback-loop{
+  max-width: 380px;
+  margin: 30px auto;
+  padding: 20px 24px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  text-align: center;
+  font-size: 16px;
+  color: var(--ink);
+}
+.feedback-loop .step{ padding: 4px 0; }
+.feedback-loop .arrow{ color: var(--gray-light); font-size: 16px; }
+
+/* ---------- pipeline strip ---------- */
+.pipeline{
+  display:flex; align-items:stretch; justify-content:center; flex-wrap:wrap;
+  margin: 32px 0; border:1px solid var(--rule); border-radius:4px; overflow:hidden;
+}
+.pipeline > div{
+  flex:1 1 110px; min-width:100px; padding:16px 10px;
+  text-align:center; border-right:1px solid var(--rule); position:relative;
+  display:flex; flex-direction:column; justify-content:center; gap:4px;
+}
+.pipeline > div:last-child{ border-right:none; }
+.pipeline b{ font-size:14.5px; }
+.pipeline small{ color: var(--gray-light); font-size:12px; }
+@media (max-width:640px){
+  .pipeline{ flex-direction:column; }
+  .pipeline > div{ border-right:none; border-bottom:1px solid var(--rule); }
+  .pipeline > div:last-child{ border-bottom:none; }
+}
+
+/* ---------- probability box ---------- */
+.probability-box{
+  display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--rule); border-radius:4px;
+  overflow:hidden; margin: 30px 0;
+}
+.probability-box > div{ padding: 24px 20px; text-align:center; }
+.probability-box > div:first-child{ border-right:1px solid var(--rule); }
+.probability-box .ttl{ font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--gray-light); margin-bottom:12px; display:block; }
+.probability-box .hard{ font-family: Consolas, Menlo, monospace; font-size:28px; color: var(--ink); }
+.probability-box .soft{ font-size: 21px; color: var(--blue); }
+@media (max-width:640px){ .probability-box{ grid-template-columns:1fr; } .probability-box > div:first-child{ border-right:none; border-bottom:1px solid var(--rule); } }
+
+/* ---------- figures ---------- */
+figure.scan{
+  margin: 40px 0;
+  text-align: center;
+}
+figure.scan img{
+  max-width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+figure.scan figcaption{
+  color: var(--gray-light);
+  font-size: 14px;
+  margin: 12px auto 0;
+  max-width: 600px;
+}
+.scan-row{ display:grid; grid-template-columns:1fr 1fr; gap:24px; margin:40px 0; }
+.scan-row figure.scan{ margin:0; }
+@media (max-width:640px){ .scan-row{ grid-template-columns:1fr; } }
+
+/* ---------- diagram card ---------- */
+.diagram-card{
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 24px 20px 18px;
+  margin: 32px 0;
+  background: #fff;
+}
+.diagram-card .cap{
+  font-size: 14px; color: var(--gray-light); margin-top:14px; text-align:center;
+}
+.diagram-card svg{ width:100%; height:auto; display:block; }
+
+/* ---------- interactive gating demo ---------- */
+.demo{
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 26px;
+  margin: 34px 0 44px;
+}
+.demo-title{
+  font-size: 14px; text-transform: uppercase; letter-spacing:0.04em; color: var(--gray-light);
+  margin-bottom: 18px; display:flex; justify-content:space-between; align-items:center;
+  font-family: Consolas, Menlo, monospace;
+}
+.demo-controls{ display:flex; gap:14px; flex-wrap:wrap; margin-bottom:22px; }
+.demo-controls label{ font-size:13px; color: var(--gray); display:flex; flex-direction:column; gap:6px; font-family: Consolas, Menlo, monospace; }
+.demo-controls input[type=range]{ width:140px; accent-color: var(--blue); }
+.demo-controls button{
+  font-family: Georgia, serif; font-size:14px; background: var(--ink); color: #fff;
+  border:none; padding:9px 18px; border-radius:4px; cursor:pointer; align-self:flex-end;
+}
+.demo-controls button:hover{ background: var(--blue); }
+#expertChart{ width:100%; height:220px; display:block; }
+.legend{ display:flex; gap:18px; font-size:12.5px; color: var(--gray-light); margin-top:10px; flex-wrap:wrap; font-family: Consolas, Menlo, monospace; }
+.legend span{ display:inline-flex; align-items:center; gap:6px; }
+.legend i{ width:10px; height:10px; display:inline-block; border-radius:2px; }
+
+/* ---------- gallery ---------- */
+.gallery{ display:grid; grid-template-columns:1fr 1fr; gap:24px; margin:30px 0; }
+.gallery figure.scan{ margin:0; }
+@media (max-width:640px){ .gallery{ grid-template-columns:1fr; } }
+
+/* ---------- callout ---------- */
+.callout{
+  margin: 34px 0; padding: 20px 24px;
+  background: #eef4fb;
+  border-left: 4px solid var(--blue);
+  border-radius: 2px;
+  font-size: 17px;
+}
+.callout.dark{
+  background: var(--ink); color:#fff; border:none; border-radius:4px;
+  padding: 30px 32px; text-align:center; font-size:18px;
+}
+.callout.dark .eyebrow{
+  display:block; color:#999; font-size:12px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:12px;
+}
+.callout.dark strong{ font-size:22px; color:#fff; display:block; margin-bottom:6px; font-weight:400; font-family: Georgia, serif; }
+
+/* ---------- toc ---------- */
+.toc-card{
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 26px 30px;
+  margin: 40px 0;
+}
+.toc-card h2{ margin:0 0 16px; font-size:19px; font-weight:700; font-family: Georgia, serif; }
+.toc-card ol{ list-style:none; margin:0; padding:0; }
+.toc-card li{ margin: 0 0 10px; font-size: 16.5px; }
+.toc-card a{ color: var(--ink); }
+.toc-card a:hover{ color: var(--blue); }
+.toc-card .n{ color: var(--gray-light); margin-right:10px; }
+
+/* ---------- note box ---------- */
+.note-box{ background: var(--paper-tint); border-left:3px solid var(--gray-light); padding:16px 20px; margin:28px 0; font-size:16.5px; }
+.note-box .label{ font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color: var(--gray-light); margin-bottom:8px; display:block; font-family: Consolas, Menlo, monospace; }
+
+/* ---------- footer ---------- */
+footer{
+  max-width: 760px; margin: 90px auto 0; padding: 40px 24px 20px; border-top: 1px solid var(--rule);
+  font-size: 16px; color: var(--gray);
+}
+footer a{ color: var(--blue); }
+footer p{ margin: 0 0 16px; }
+
+.footer-bottom{
+  border-top: 1px solid var(--rule);
+  margin-top: 20px;
+}
+.footer-bottom-inner{
+  max-width:760px; margin:0 auto; padding: 20px 24px 50px; display:flex; justify-content:space-between;
+  font-size: 14px; color: var(--gray-light); flex-wrap:wrap; gap:10px;
+}
+.footer-bottom-inner a{ color: var(--gray-light); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="#top" class="brand">
+      <span class="icon"><img src="data:image/png;base64,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" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:8px;"/></span>
+      <span class="name">Tilak's Notes</span>
+    </a>
+    <nav>
+      <a href="#contents">Contents</a>
+    </nav>
+  </div>
+</div>
+
+<div class="page" id="top">
+
+<h1 class="title">An intuitive walkthrough of the noisy top-k MoE gate</h1>
+<p class="meta">August 2026, reading Shazeer et al. (2017)</p>
+
+<p>I sat down with the sparsely-gated mixture-of-experts paper wanting to actually understand the gating equation end to end, not just recognize it. It's a small equation, fits on one line, but every piece in it is doing specific work: a linear score, a masking op, a softmax, and, buried in the middle, a noise term that looked unnecessary on first read.</p>
+
+<p>This is that walkthrough, term by term, in the order I actually worked through it, mistakes included, because the order matters more than the destination. Along the way I had to work out why the noise is there at all, which turned out to be its own small detour through discrete masks, a variance identity, and a derivative that refuses to exist at the boundary.</p>
+
+<blockquote class="pull">Every term in that first equation earns its place. This walks through why, piece by piece, top-k, the softmax, and yes, the noise too.</blockquote>
+
+<div class="toc-card" id="contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#setup"><span class="n">1.</span>The setup, routing as a linear layer with an attitude</a></li>
+    <li><a href="#topk"><span class="n">2.</span>Keeping only the top k</a></li>
+    <li><a href="#shapes"><span class="n">3.</span>A worked shape example</a></li>
+    <li><a href="#discontinuous"><span class="n">4.</span>Why "just take the gradient" doesn't work</a></li>
+    <li><a href="#noise"><span class="n">5.</span>Making the choice stochastic (why the noise term is there)</a></li>
+    <li><a href="#imbalance"><span class="n">6.</span>The new problem noise didn't fix</a></li>
+    <li><a href="#cv"><span class="n">7.</span>Variance vs. coefficient of variation</a></li>
+    <li><a href="#cv2"><span class="n">8.</span>Why the square, and where raw CV breaks</a></li>
+    <li><a href="#load"><span class="n">9.</span>Load, the loss for what importance can't see</a></li>
+    <li><a href="#demo"><span class="n">10.</span>An interactive version of the gate</a></li>
+    <li><a href="#wrap"><span class="n">11.</span>Where this leaves me</a></li>
+  </ol>
+</div>
+
+<h2 id="setup"><span class="num">1.</span> The setup</h2>
+
+<p>Say you have a token, represented as a vector $x$. You have $N$ experts sitting around, and you want the token to decide which few of them are worth its compute. The most naive thing you could do is learn a matrix $W_g$ of shape $(C \times N)$, where $C$ is the embedding dimension, and just compute</p>
+
+<div class="eq-block">
+  <div class="eq-label">eq. 1, raw routing score</div>
+  $$H(x) = (x \cdot W_g)_i + \text{StandardNormal}(1) \cdot \text{Softplus}(x \cdot W_{noise})_i$$
+</div>
+
+<p>The first term is trivial. It's just $x$ multiplied by $W_g$, and it gives you a raw routing decision, one scalar per expert, telling you roughly how much that expert "wants" this token. Nothing clever there. The interesting part, and the part I initially wanted to skip past, is term two.</p>
+
+<div class="aside"><span class="tag">why write it this way. </span>I originally tried to understand the noise term on its own, in isolation. That doesn't work. You only understand why the noise term looks like this once you ask why you're adding noise at all. The two questions are coupled, so I had to hold off on judging the equation until later in the derivation.</div>
+
+<p>A standard normal sample multiplied by <code>Softplus(x · W_noise)</code>. At first glance the softplus looks like it's doing nothing, it's just a smooth way to make <code>(x · W_noise)</code> positive, because in this setup we're using it as a standard deviation, and you can't have a negative standard deviation. So softplus is always positive, and that's the whole reason it's there.</p>
+
+<p>What this term is really doing is giving the standard normal a <em>learned</em> standard deviation. The network gets to decide, per token and per expert, how much randomness to inject into its own routing decision. Why it would ever want to do that is the real question, and it only makes sense once you've hit the wall in section 4.</p>
+
+<details class="checkpoint">
+  <summary>Checkpoint, what should be clear so far</summary>
+  <div class="body">Before top-k happens, every expert has a noisy score. The learned part is $x \cdot W_g$; $W_{noise}$ controls how much random perturbation gets added, and that amount is itself learned per token, per expert.</div>
+</details>
+
+<h2 id="topk"><span class="num">2.</span> Keeping only the top k</h2>
+
+<p>Once you have this noisy score $H(x)$, you don't route to every expert, that would defeat the entire point of a mixture of experts, which is to spend compute on only a handful of specialists per token. So you define a masking operation:</p>
+
+<div class="eq-block">
+  <div class="eq-label">keep-top-k</div>
+  $$\text{KeepTopK}(v, k)_i = \begin{cases} v_i & \text{if } v_i \text{ is in the top } k \text{ of } v \\ -\infty & \text{otherwise} \end{cases}$$
+</div>
+
+<p>The reason it's $-\infty$ and not just $0$ is that the next step is a softmax. If you send $-\infty$ into a softmax, $e^{-\infty} = 0$, and that expert contributes nothing to the output, cleanly, not approximately. Everything that survives the top-k cut gets to fight it out in the softmax; everything else is annihilated before it can.</p>
+
+<div class="eq-block">
+  <div class="eq-label">eq. 3, the gate</div>
+  $$G(x) = \text{Softmax}\big(\text{KeepTopK}(H(x), k)\big)$$
+</div>
+
+<p>$G(x)$ is what you actually use. It's a probability distribution over experts, but a sparse one, exactly $k$ nonzero entries, everything else stone dead. If $G(x)_i = 0$, there's no need to ever run $E_i(x)$, that's where the actual compute saving comes from, not just a mathematical nicety.</p>
+
+<p>A concrete example makes this land. For a single token with raw scores $[8.0,\ 3.0,\ -\infty,\ -\infty]$ after masking to $k=2$:</p>
+
+<div class="mini-example">
+  <div class="score-row selected"><span>Expert 1</span><b>8.0</b></div>
+  <div class="score-row selected"><span>Expert 2</span><b>3.0</b></div>
+  <div class="score-row muted"><span>Expert 3</span><b>−∞</b></div>
+  <div class="score-row muted"><span>Expert 4</span><b>−∞</b></div>
+</div>
+
+<p>After softmax, experts 1 and 2 get real positive weight, and experts 3 and 4 get exactly zero, not approximately zero, exactly zero, because $e^{-\infty}$ is exact.</p>
+
+<h2 id="shapes"><span class="num">3.</span> A worked shape example</h2>
+
+<p>I kept losing track of what shape everything was while reading the paper's appendix, so I forced myself to draw it out with an actual tensor before going further. Say you have an input tensor $x$ with:</p>
+
+<ul>
+<li>batch size $B$</li>
+<li>sequence length $T$</li>
+<li>embedding dim $C$</li>
+</ul>
+
+<p>so $x$ has shape $(B, T, C)$. The gate weight matrix $W_g$ has shape $(C, N)$ where $N$ is the number of experts. Multiplying $x \cdot W_g$ is an einsum contracting the shared $C$ dimension:</p>
+
+<pre><code>x       : (B, T, C)
+W_g     : (C, N)
+x @ W_g : einsum('btc,cn->btn', x, W_g)  ->  (B, T, N)</code></pre>
+
+<p>which means every single token, and there are $B \times T$ of them, ends up with a length-$N$ vector, one raw score per expert. That's the object we then add noise to, mask with keep-top-k, and softmax.</p>
+
+<figure class="scan">
+  <img src="assets/page-02.png" alt="handwritten note showing the tensor shape diagram, B by T by C, and the gate weight matrix C by N">
+  <figcaption>From my notebook, the shape diagram I actually drew to stop confusing myself. Page 2.</figcaption>
+</figure>
+
+<p>Concretely, if $k = 2$, then for a single token you might get a raw score row like</p>
+
+<div class="eq-block">
+$$[-\infty,\ -\infty,\ 8,\ -\infty,\ -\infty,\ 3,\ -\infty,\ -\infty,\ -\infty]$$
+</div>
+
+<p>after masking, and softmaxing that gives you</p>
+
+<div class="eq-block">
+$$\left[0,\,0,\,\frac{e^8}{e^8+e^3},\,0,\,0,\,\frac{e^3}{e^8+e^3},\,0,\,0,\,0\right]$$
+</div>
+
+<p>Two experts get a real weight, everyone else gets exactly zero. That's the routing decision for that token.</p>
+
+<div class="diagram-card">
+  <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pipeline from token to gate">
+    <defs>
+      <marker id="arrow1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#4183c4"/>
+      </marker>
+    </defs>
+    <g font-family="Georgia, serif" font-size="13" fill="#1a1a1a">
+      <g>
+        <rect x="10" y="70" width="98" height="56" rx="4" fill="#fff" stroke="#e3e3e3"/>
+        <text x="59" y="94" text-anchor="middle" font-weight="700">token x</text>
+        <text x="59" y="112" text-anchor="middle" fill="#999" font-size="11">(B,T,C)</text>
+      </g>
+      <line x1="108" y1="98" x2="148" y2="98" stroke="#4183c4" stroke-width="1.5" marker-end="url(#arrow1)"/>
+      <g>
+        <rect x="150" y="60" width="120" height="76" rx="4" fill="#fff" stroke="#e3e3e3"/>
+        <text x="210" y="90" text-anchor="middle" font-weight="700">x · W_g</text>
+        <text x="210" y="108" text-anchor="middle">+ noise</text>
+        <text x="210" y="123" text-anchor="middle" fill="#999" font-size="11">H(x)</text>
+      </g>
+      <line x1="270" y1="98" x2="310" y2="98" stroke="#4183c4" stroke-width="1.5" marker-end="url(#arrow1)"/>
+      <g>
+        <rect x="312" y="60" width="120" height="76" rx="4" fill="#fff" stroke="#e3e3e3"/>
+        <text x="372" y="90" text-anchor="middle" font-weight="700">KeepTopK</text>
+        <text x="372" y="108" text-anchor="middle">-> -inf mask</text>
+        <text x="372" y="123" text-anchor="middle" fill="#999" font-size="11">only k survive</text>
+      </g>
+      <line x1="432" y1="98" x2="472" y2="98" stroke="#4183c4" stroke-width="1.5" marker-end="url(#arrow1)"/>
+      <g>
+        <rect x="474" y="60" width="106" height="76" rx="4" fill="#eef4fb" stroke="#4183c4"/>
+        <text x="527" y="90" text-anchor="middle" font-weight="700" fill="#2c5f8f">Softmax</text>
+        <text x="527" y="108" text-anchor="middle" fill="#2c5f8f">G(x)</text>
+        <text x="527" y="123" text-anchor="middle" fill="#5a86ab" font-size="11">sparse gate</text>
+      </g>
+      <line x1="580" y1="98" x2="620" y2="98" stroke="#4183c4" stroke-width="1.5" marker-end="url(#arrow1)"/>
+      <g>
+        <rect x="622" y="70" width="70" height="56" rx="4" fill="#fff" stroke="#e3e3e3"/>
+        <text x="657" y="94" text-anchor="middle" font-weight="700">y</text>
+        <text x="657" y="112" text-anchor="middle" fill="#999" font-size="10">output</text>
+      </g>
+    </g>
+  </svg>
+  <div class="cap">The full forward pass of the gate, token to output weighting. Every box reappears as its own section below.</div>
+</div>
+
+<hr class="rule">
+
+<h2 id="discontinuous"><span class="num">4.</span> Why "just take the gradient" doesn't work here</h2>
+
+<p>This is where I got stuck for a while, and it's the whole reason the noise term exists, so it's worth being slow about it.</p>
+
+<p>The number of tokens each expert receives, or equivalently the fraction of tokens each expert gets, is <strong>discrete</strong>. You can't directly add it as a loss term, because it's basically a step function: expert $j$'s share is $\frac{n_j}{\text{total}}$, where $n_j$ is a count. Discrete, non-differentiable functions like counts don't have a gradient with respect to the routing weights, gradient descent literally cannot see them.</p>
+
+<blockquote class="pull">Discrete functions are not differentiable. Gradient descent can't optimize what it can't measure a slope of.</blockquote>
+
+<p>And it's not just the count that's the problem, the gate itself is discrete before we even get to counting anything. The probability that expert $i$ is selected by token $x$ is exactly $1$ if it's in the top-$k$, and exactly $0$ if it isn't. That's a step function too, deterministic, and non-differentiable at the boundary between "in" and "out." A tiny nudge to the routing weights either doesn't change the selection at all (gradient is zero), or it flips the selection entirely (gradient is undefined), there's no smooth in-between.</p>
+
+<div class="probability-box">
+  <div>
+    <span class="ttl">deterministic top-k</span>
+    <div class="hard">0 / 1</div>
+    <p style="font-size:14px;color:var(--gray);margin:10px 0 0;">A step. No slope anywhere except a spike at the boundary.</p>
+  </div>
+  <div>
+    <span class="ttl">with noise added</span>
+    <div class="soft">P(x, i) in [0, 1]</div>
+    <p style="font-size:14px;color:var(--gray);margin:10px 0 0;">A smooth curve. Differentiable everywhere.</p>
+  </div>
+</div>
+
+<div class="note-box">
+<span class="label">the problem, stated precisely</span>
+If we could somehow make the top-k selection <em>stochastic</em> instead of deterministic, all we'd need is a smooth probability function of that stochastic event, something we <em>can</em> differentiate.
+</div>
+
+<p>That single sentence is the entire justification for section 1's noise term. It's not there to regularize anything or to add some vague "exploration." It's there because a deterministic step function has no gradient, and a probability of a step function crossing a random threshold does.</p>
+
+<h2 id="noise"><span class="num">5.</span> Making the choice stochastic (why the noise term is there)</h2>
+
+<p>Here's the mechanism. Currently, "is expert $i$ in the top-$k$" is a hard yes/no. To make this probabilistic we inject a random normal draw into the gate value before the top-k comparison happens:</p>
+
+<div class="eq-block">
+$$H(x) = (x \cdot W_g)_i + \mathcal{N}(0,1) \cdot \text{Softplus}\big((x \cdot W_{noise})_i\big)$$
+</div>
+
+<p>Once you add this, you genuinely cannot say in advance whether the previous top-$k$ experts are still going to be selected, the noise might tip somebody in or out. That unpredictability is exactly the point: it converts a hard boundary into something you can ask a probability question about.</p>
+
+<figure class="scan">
+  <img src="assets/page-11.png" alt="handwritten derivation of how noise makes top-k selection stochastic">
+  <figcaption>The moment it clicked, noise turns a yes/no into a "what's the probability." Page 11.</figcaption>
+</figure>
+
+<p>So what is that probability, exactly? For token $x$, expert $i$ gets selected if and only if, after adding noise, its gate value clears the $k$-th largest value among all the <em>other</em> experts' gate-plus-noise values. Call that $k$-th largest threshold $(H(x), k, i)_{\text{excluding } i}$. Then expert $i$ makes it in exactly when:</p>
+
+<div class="eq-block">
+$$\text{noise} \;>\; \big[H(x), k, i\big]_{k\text{-th excluding } i} - (x \cdot W_g)_i$$
+</div>
+
+<p>This is now a completely standard question: "given a distribution, what's the probability a sample from it exceeds some threshold?" That's exactly what a CDF answers. Since our noise is a zero-mean unit Gaussian scaled by softplus, we can normalize the threshold back to unit-Gaussian units and read the probability straight off the CDF:</p>
+
+<div class="eq-block">
+  <div class="eq-label">eq., probability token $x$ routes to expert $i$</div>
+  $$P(x, i) = \Phi\!\left(\frac{(x \cdot W_g)_i - \big[H(x), k, i\big]_{k\text{-th excluding } i}}{\text{Softplus}\big((x \cdot W_{noise})_i\big)}\right)$$
+</div>
+
+<p>where $\Phi$ is the standard normal CDF. This is the payoff. $P(x,i)$ is smooth in every one of its inputs, $W_g$, $W_{noise}$, the threshold, all of it, because a CDF is a smooth function. We took something with a wall in it (in/out, 1/0) and replaced it with a continuous probability that a random sample clears a wall. Backprop can flow through this cleanly.</p>
+
+<details class="checkpoint">
+  <summary>Checkpoint, what did the CDF actually buy us</summary>
+  <div class="body">A CDF answers "what's the probability a random draw from this distribution exceeds some value." Because our noise is Gaussian with a known, learned scale, that question has a closed form: $\Phi(\cdot)$. That closed form is differentiable in the gate weights, the noise weights, and the threshold, which is the entire reason the discrete masking problem from section 4 goes away.</div>
+</details>
+
+<div class="note-box">
+<span class="label">one thing I want to flag that my notes glossed over</span>
+The paper is explicit that this discreteness is used deliberately, not smoothed away in the forward pass, the actual forward computation still does hard top-k masking with $-\infty$. It's only the <em>gradient story</em>, via this probability, that's smooth. Shazeer et al. write plainly that this creates "theoretically scary discontinuities in the output of the gating function," but report not observing it as a practical problem. Worth sitting with: the elegance here is in the loss and gradient construction, not in making the forward pass itself soft.
+</div>
+
+<hr class="rule">
+
+<h2 id="imbalance"><span class="num">6.</span> The new problem noise didn't fix</h2>
+
+<p>Okay, so noise buys you a gradient. It does not, by itself, buy you a good router. Here's the failure mode I ran into next.</p>
+
+<p>Say a token selects two experts. If it always uses the same two, equally, every time, that kills the entire premise of choosing top-$k$ instead of top-$1$. You wanted diversity of routing; you got two experts locked in a tight orbit around each other while $N-2$ experts starve.</p>
+
+<div class="feedback-loop">
+  <div class="step">expert gets slightly more tokens</div>
+  <div class="arrow">↓</div>
+  <div class="step">expert gets more gradient signal</div>
+  <div class="arrow">↓</div>
+  <div class="step">expert becomes better on average</div>
+  <div class="arrow">↓</div>
+  <div class="step">router prefers it even more</div>
+  <div class="arrow">↓</div>
+  <div class="step" style="font-weight:700;">a few experts absorb everything</div>
+</div>
+
+<blockquote class="pull">If you choose k experts, be balanced at their utilisation.</blockquote>
+
+<p>How does a token actually make use of an expert, once selected? It's a weighted sum:</p>
+
+<div class="eq-block">
+$$y = \sum_i s_i \cdot E_i(x)$$
+</div>
+
+<p>where $s_i$ is the gate score that expert $i$ got (from $G(x)$), and $E_i(x)$ is just the expert's own forward pass on $x$. Now imagine the gate keeps handing out scores like $[0.01,\ 0.99]$ for two selected experts, and it can learn this pattern very early and it becomes self-reinforcing, the expert that starts slightly ahead gets more gradient signal, gets better, gets picked more, gets even more signal. A hard constraint could stop this, but we don't want a hard constraint here, we want a <em>soft</em> constraint, something we can add to the loss and let gradient descent handle organically.</p>
+
+<h2 id="cv"><span class="num">7.</span> Variance vs. coefficient of variation</h2>
+
+<p>The quantity we actually care about is how "important" each expert is across an entire batch. Define, for expert $x$ (overloading notation slightly, following the paper):</p>
+
+<div class="eq-block">
+  <div class="eq-label">importance of an expert</div>
+  $$\text{Importance}(x) = \sum_{n} G(x)_n$$
+</div>
+
+<p>sum the gate score that expert got across every token $n$ in the batch. For the whole layer to be well-balanced, every expert should end up with roughly similar importance: low variance, ideally, and definitely not one runaway expert with high importance while everyone else starves.</p>
+
+<p>The obvious first instinct is: penalize the variance of the importance vector. I tried this and immediately found the reason it's the wrong tool. Consider two toy distributions of "tokens received":</p>
+
+<div class="diagram-card">
+  <svg viewBox="0 0 640 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bar chart comparing variance across two scaled distributions">
+    <g font-family="Georgia, serif" font-size="12" fill="#1a1a1a">
+      <line x1="60" y1="20" x2="60" y2="190" stroke="#e3e3e3"/>
+      <line x1="60" y1="190" x2="600" y2="190" stroke="#e3e3e3"/>
+      <rect x="110" y="150" width="46" height="40" fill="#9cbcdc"/>
+      <text x="133" y="205" text-anchor="middle">e1</text>
+      <rect x="170" y="70" width="46" height="120" fill="#4183c4"/>
+      <text x="193" y="205" text-anchor="middle">e2</text>
+      <text x="163" y="222" text-anchor="middle" fill="#999">[1, 3]  mean 2  var 1</text>
+      <rect x="330" y="110" width="46" height="80" fill="#9cbcdc"/>
+      <text x="353" y="205" text-anchor="middle">e1</text>
+      <rect x="390" y="30" width="46" height="160" fill="#4183c4"/>
+      <text x="413" y="205" text-anchor="middle">e2</text>
+      <text x="383" y="222" text-anchor="middle" fill="#999">[2, 6]  mean 4  var 4</text>
+      <text x="580" y="24" text-anchor="end" fill="#c0341d" font-weight="700" font-size="12">same ratio, 4x the variance</text>
+    </g>
+  </svg>
+  <div class="cap">Identical relative imbalance (expert 2 always gets 3x expert 1), but raw variance quadruples just from scale. CV stays fixed at 0.5 in both cases.</div>
+</div>
+
+<div class="scan-row">
+<figure class="scan">
+  <img src="assets/page-06.png" alt="notebook page showing variance calculation for distribution 1,3">
+  <figcaption>Variance for [1, 3], mean 2. Page 6.</figcaption>
+</figure>
+<figure class="scan">
+  <img src="assets/page-08.png" alt="notebook page showing why CV squared is preferred over raw variance">
+  <figcaption>Same relative imbalance, larger scale, where the trouble starts. Page 8.</figcaption>
+</figure>
+</div>
+
+<p>Take $[1, 3]$: mean is $2$, variance is $\frac{(1-2)^2 + (3-2)^2}{2} = 1$. Now scale everything up while keeping the exact same <em>relative</em> proportion, expert 2 always receiving 3x what expert 1 receives, say $[2, 6]$: mean is $4$, variance is $\frac{(2-4)^2+(6-4)^2}{2} = 4$.</p>
+
+<p>The variance quadrupled even though the actual imbalance, the ratio between the two experts, didn't change at all. If we use variance as a loss, then simply having more total tokens flowing through the same, evenly-proportioned system produces a bigger loss for no real reason. In the dynamic-batching setting this is a real headache, because batch sizes vary constantly and we don't want the loss magnitude to swing around just because of that. We want the loss to track relative imbalance, not absolute scale.</p>
+
+<p>The natural fix is the <strong>coefficient of variation</strong>:</p>
+
+<div class="eq-block">
+  <div class="eq-label">CV</div>
+  $$\text{CV} = \frac{\text{std}}{\text{mean}}$$
+</div>
+
+<p>Check it against the same two cases: $\text{CV}([1,3]) = \frac{1}{2} = 0.5$, and $\text{CV}([2,6]) = \frac{2}{4} = 0.5$. Identical. Scale-invariant, exactly as wanted, same relative proportions give the same loss regardless of total token count.</p>
+
+<h2 id="cv2"><span class="num">8.</span> Why the square, and where the raw CV breaks</h2>
+
+<p>The paper's actual importance loss uses $\text{CV}^2$, not raw CV, and this is where I had to sit down and actually differentiate the thing to understand why, because on the surface CV already looked fine to me.</p>
+
+<div class="eq-block">
+  <div class="eq-label">differentiating CV directly</div>
+  $$\frac{\partial \, \text{CV}}{\partial x_i} = \frac{2(x_i - \text{mean})}{\text{mean} \cdot \text{std}} \cdot \left(1 - \frac{1}{N}\right) \;-\; \frac{\text{std}}{\text{mean}^2}\cdot\frac{1}{N}$$
+</div>
+
+<p>Look at where <code>std</code> sits in that expression, in the <em>denominator</em>. That's the problem. As the distribution approaches perfect balance, <code>std → 0</code>, and this derivative blows up: division by a quantity heading to zero. Right exactly at the point we want the optimizer to settle into, perfect balance, the gradient is either undefined or numerically explodes into floating point garbage. That's a nasty place to have a singularity, because it's precisely the target you're trying to reach.</p>
+
+<p>Now differentiate $\text{CV}^2$ instead, using the chain rule on $\text{CV}^2 = (\text{CV})^2$:</p>
+
+<div class="eq-block">
+  <div class="eq-label">the std cancels</div>
+  $$\frac{\partial \, \text{CV}^2}{\partial x_i} = 2 \cdot \text{CV} \cdot \frac{\partial \, \text{CV}}{\partial x_i} = 2 \cdot \frac{\text{std}}{\text{mean}} \cdot \frac{1}{\text{std}}\cdot(\ldots)$$
+</div>
+
+<p>The extra factor of <code>std</code> from the outer chain-rule term cancels the <code>std</code> sitting in the denominator of $\partial\text{CV}/\partial x_i$. What's left is finite and well-behaved everywhere, including exactly at perfect balance. Squaring isn't cosmetic here, it's the thing that repairs a genuine non-differentiability at the point that matters most.</p>
+
+<figure class="scan">
+  <img src="assets/page-04.png" alt="handwritten page deriving the reason CV squared is used, with cancellation shown">
+  <figcaption>The cancellation, this page is where CV² stopped feeling arbitrary. Page 4.</figcaption>
+</figure>
+
+<div class="eq-block">
+  <div class="eq-label">importance loss</div>
+  $$L_{\text{importance}}(x) = w_{\text{importance}} \cdot \text{CV}\big(\text{Importance}(x)\big)^2$$
+</div>
+
+<details class="checkpoint">
+  <summary>Checkpoint, variance, CV, CV², in one line each</summary>
+  <div class="body">
+  Variance measures spread but scales with the numbers themselves, so it's a bad loss for something whose scale (batch size) keeps changing. CV fixes the scale problem by dividing by the mean. CV² fixes CV's own problem, a gradient singularity exactly at perfect balance, by squaring, which makes the offending <code>std</code> term cancel out of the derivative.
+  </div>
+</details>
+
+<h2 id="load"><span class="num">9.</span> Load, the loss for the thing importance can't see</h2>
+
+<p>Even with the importance loss fixed and finite everywhere, it can still be satisfied while something is quietly wrong underneath. This is the part of the derivation that actually surprised me the most, because it means importance alone is not a complete fix.</p>
+
+<div class="diagram-card">
+  <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two experts with identical importance sum but different token counts">
+    <g font-family="Georgia, serif" font-size="12" fill="#1a1a1a">
+      <text x="150" y="24" text-anchor="middle" font-weight="700">expert A, 10 tokens</text>
+      <g>
+        <rect x="30" y="40" width="18" height="90" fill="#4183c4"/>
+        <rect x="55" y="48" width="18" height="82" fill="#4183c4"/>
+        <rect x="80" y="56" width="18" height="74" fill="#4183c4"/>
+        <rect x="105" y="56" width="18" height="74" fill="#4183c4"/>
+        <rect x="130" y="80" width="18" height="50" fill="#9cbcdc"/>
+        <rect x="155" y="100" width="18" height="30" fill="#9cbcdc"/>
+        <rect x="180" y="115" width="18" height="15" fill="#e3e3e3"/>
+        <rect x="205" y="118" width="18" height="12" fill="#e3e3e3"/>
+        <rect x="230" y="122" width="18" height="8" fill="#e3e3e3"/>
+        <rect x="255" y="126" width="18" height="4" fill="#e3e3e3"/>
+      </g>
+      <line x1="20" y1="130" x2="280" y2="130" stroke="#e3e3e3"/>
+      <text x="150" y="150" text-anchor="middle" fill="#999">few tokens, strong probs</text>
+      <text x="150" y="168" text-anchor="middle" font-weight="700" fill="#2c5f8f">sum P ~= 8</text>
+
+      <text x="490" y="24" text-anchor="middle" font-weight="700">expert B, 20 tokens</text>
+      <g>
+        <rect x="350" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="363" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="376" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="389" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="402" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="415" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="428" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="441" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="454" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="467" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="480" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="493" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="506" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="519" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="532" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="545" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="558" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="571" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="584" y="90" width="9" height="40" fill="#c0341d"/>
+        <rect x="597" y="90" width="9" height="40" fill="#c0341d"/>
+      </g>
+      <line x1="345" y1="130" x2="610" y2="130" stroke="#e3e3e3"/>
+      <text x="475" y="150" text-anchor="middle" fill="#999">twice the tokens, weak probs each (~0.4)</text>
+      <text x="475" y="168" text-anchor="middle" font-weight="700" fill="#c0341d">sum P ~= 8</text>
+
+      <text x="320" y="196" text-anchor="middle" fill="#1a1a1a" font-weight="700">Importance is identical. The underlying load is not.</text>
+    </g>
+  </svg>
+  <div class="cap">Same importance sum, completely different number of tokens actually contributing. Importance alone can't tell these two situations apart.</div>
+</div>
+
+<p>Imagine expert A receives softmax-normalized gate probabilities like $[0.9, 0.8, 0.7, 0.7, 0.5, \ldots]$ across only 10 tokens, summing to, say, $8$. Now imagine expert B receives probabilities like $[0.4, 0.4, 0.4, 0.4, \ldots]$ but across 20 tokens, and its sum also comes out to $8$.</p>
+
+<p>Importance is identical for both. But the underlying situation is completely different: expert A is being chosen decisively by a few tokens, expert B is being chosen weakly by twice as many. Importance, being a simple sum, is blind to this distinction, it can't see how many tokens contributed or how confidently. This is exactly where things quietly go wrong again, and it's why the paper introduces a second, separate loss: <strong>load balancing</strong>.</p>
+
+<p>Load fixes this by going back to the smooth selection probability we derived in section 5, $P(x, i)$, and summing it properly per expert, rather than summing the post-softmax gate scores:</p>
+
+<div class="eq-block">
+  <div class="eq-label">load</div>
+  $$\text{Load}(x)_i = \sum_{n=1}^{|X|} P(x_n, i)$$
+</div>
+
+<p>Every probability, summed, and, because $P(x,i)$ is built from that CDF construction in section 5, perfectly differentiable, meaning clean backprop, no discrete counting anywhere in sight. Then the exact same reasoning from section 8 applies again, for exactly the same reason (scale invariance, and a well-behaved gradient at the balance point):</p>
+
+<div class="eq-block">
+  <div class="eq-label">load loss</div>
+  $$L_{\text{load}}(x) = w_{\text{load}} \cdot \text{CV}\big(\text{Load}(x)\big)^2$$
+</div>
+
+<p>And the total auxiliary loss the paper adds alongside the task loss is simply the sum of both, each weighted by a small coefficient:</p>
+
+<div class="eq-block">
+$$L_{\text{total}} = L_{\text{task}} + L_{\text{importance}} + L_{\text{load}}$$
+</div>
+
+<div class="note-box">
+<span class="label">grounding this against the paper</span>
+This matches what Shazeer et al. actually describe: two loss terms, one pushing toward equal expert <em>importance</em> and one toward equal <em>load</em>, with the load term specifically motivated by the fact that importance can be satisfied by a small number of experts each with an extreme gate value, even while token counts stay wildly uneven across experts. The noise term's job, in their own account, is precisely to make load differentiable in the first place, without it there's nothing continuous to write $\text{Load}(x)_i$ as a sum of.
+</div>
+
+<hr class="rule">
+
+<h2 id="demo"><span class="num">10.</span> A small interactive version of the gate</h2>
+
+<p>I wanted to actually watch what noise does to a top-k decision instead of just trusting the algebra, so here's a tiny simulation: 8 toy experts, adjustable noise scale, adjustable $k$. Increase the noise and watch how often the selected set changes between draws for the exact same underlying gate scores.</p>
+
+<div class="demo">
+  <div class="demo-title"><span>toy gate, 8 experts</span><span id="drawCount">draws: 0</span></div>
+  <div class="demo-controls">
+    <label>noise σ (base)
+      <input type="range" id="noiseSlider" min="0" max="4" step="0.1" value="1.2">
+    </label>
+    <label>top k
+      <input type="range" id="kSlider" min="1" max="4" step="1" value="2">
+    </label>
+    <button id="redrawBtn">redraw noise</button>
+  </div>
+  <canvas id="expertChart"></canvas>
+  <div class="legend">
+    <span><i style="background:#4183c4"></i> selected (top-k after noise)</span>
+    <span><i style="background:#e3e3e3"></i> masked to −∞</span>
+    <span><i style="background:#c0341d;width:2px;height:14px;border-radius:0;"></i> raw gate score (no noise)</span>
+  </div>
+</div>
+
+<p>Notice: as $\sigma$ increases from $0$, the selection starts flipping even though the underlying raw scores (the red ticks) never move. That flipping <em>is</em> the randomness that makes the CDF story in section 5 meaningful, without it, "probability of being selected" would just collapse back to a deterministic $0$ or $1$, and we'd be back where we started.</p>
+
+<h2 id="wrap"><span class="num">11.</span> Where this leaves me</h2>
+
+<p>Stringing it all together, back to $G(x)$ from section 2:</p>
+
+<div class="eq-block">
+$$
+\begin{aligned}
+H(x)_i &= (x \cdot W_g)_i + \mathcal{N}(0,1)\cdot\text{Softplus}\big((x \cdot W_{noise})_i\big) \\[4pt]
+G(x) &= \text{Softmax}\big(\text{KeepTopK}(H(x), k)\big) \\[4pt]
+L_{\text{aux}} &= w_{\text{imp}}\cdot\text{CV}\big(\textstyle\sum_n G(x_n)\big)^2 \;+\; w_{\text{load}}\cdot\text{CV}\big(\textstyle\sum_n P(x_n,\cdot)\big)^2
+\end{aligned}
+$$
+</div>
+
+<div class="pipeline">
+  <div><b>discrete routing</b><small>no gradient</small></div>
+  <div><b>+ noise</b><small>softplus scale</small></div>
+  <div><b>probability</b><small>via CDF</small></div>
+  <div><b>Load(x)</b><small>differentiable sum</small></div>
+  <div><b>CV²</b><small>scale-invariant, smooth</small></div>
+  <div><b>L_aux</b><small>trainable signal</small></div>
+</div>
+
+<p>Every piece exists because of the piece before it. Noise exists because hard top-k has no gradient. The softplus exists because noise needs a non-negative, learnable scale. The CDF exists because "probability of clearing a random threshold" is the smooth stand-in for a step function. CV exists because raw variance is scale-dependent and useless across varying batch sizes. The square exists because CV alone has a gradient singularity exactly at the point of perfect balance. And load exists as a separate term because importance, being built from post-softmax scores, is blind to how many tokens actually contributed to that sum.</p>
+
+<div class="callout dark">
+  <span class="eyebrow">the main idea, compressed</span>
+  <strong>Top-k gives sparsity. Noise gives it a gradient.</strong>
+  The CDF turns a hard decision into a probability; CV² turns that probability into a scale-invariant, well-behaved loss.
+</div>
+
+<p>None of it is decorative. That was the actual lesson for me, every term in that first ugly-looking equation earns its place, and you can't see why until you've hit the specific wall it was built to route around.</p>
+
+<div class="note-box">
+<span class="label">left open, for a follow-up</span>
+I haven't yet worked through how this interacts with expert-capacity dropping (tokens that overflow a full expert's buffer get dropped entirely in most modern implementations, Switch Transformer and GShard both do this differently), or how top-1 routing changes the picture, since a lot of that Load derivation implicitly assumes $k \geq 2$ is meaningful. That's the next notebook.
+</div>
+
+<h2>My original derivation</h2>
+<p>A few more pages from the actual notebook, kept here because the progression across them is the real record of how this was worked out, not a cleaned-up version after the fact.</p>
+<div class="gallery">
+  <figure class="scan">
+    <img src="assets/page-01.png" alt="First page of handwritten derivation, term 1 and term 2 explained">
+    <figcaption>Where it starts, term 1 and term 2, first pass. Page 1.</figcaption>
+  </figure>
+  <figure class="scan">
+    <img src="assets/page-13.png" alt="Final page tying probability, CDF, and load together">
+    <figcaption>The close, probability, CDF, and Load tied together. Page 13.</figcaption>
+  </figure>
+</div>
+
+</div>
+
+<footer>
+  <p><em>Code for this, the actual gating layer, not just the math, is coming in a follow-up post once I've trained it on something real instead of toy tensors.</em></p>
+  <p><strong>References</strong></p>
+  <p>Shazeer, Mirhoseini, Maziarz, Davis, Le, Hinton, Dean, <a href="https://arxiv.org/abs/1701.06538" target="_blank" rel="noopener">"Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer"</a>, arXiv:1701.06538 (2017). Notation above follows my own notes, not the paper's variable names exactly, I've tried to flag anywhere I diverge from or extend what's written there.</p>
+  <p>Karpathy, A., general inspiration for how I try to write these up.</p>
+  <p>Handwritten pages are scans of my actual working notebook, included so the derivation reads the way I actually arrived at it rather than a cleaned-up version after the fact.</p>
+</footer>
+<div class="footer-bottom">
+  <div class="footer-bottom-inner">
+    <span>Tilak, Technical Notes</span>
+    <a href="#top">Back to top ↑</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('expertChart');
+  const ctx = canvas.getContext('2d');
+  const noiseSlider = document.getElementById('noiseSlider');
+  const kSlider = document.getElementById('kSlider');
+  const redrawBtn = document.getElementById('redrawBtn');
+  const drawCountEl = document.getElementById('drawCount');
+
+  const N = 8;
+  const rawScores = [1.2, 3.4, 0.5, 2.8, -0.3, 1.9, 3.1, 0.9];
+  let drawCount = 0;
+
+  function resize(){
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = 220 * dpr;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  function gaussianSample(){
+    let u = 0, v = 0;
+    while(u === 0) u = Math.random();
+    while(v === 0) v = Math.random();
+    return Math.sqrt(-2.0*Math.log(u)) * Math.cos(2.0*Math.PI*v);
+  }
+
+  function softplus(x){ return Math.log(1+Math.exp(x)); }
+
+  function draw(){
+    resize();
+    const width = canvas.getBoundingClientRect().width;
+    const height = 220;
+    ctx.clearRect(0,0,width,height);
+
+    const sigmaBase = parseFloat(noiseSlider.value);
+    const k = parseInt(kSlider.value);
+
+    const noisy = rawScores.map((s) => {
+      const scale = softplus(sigmaBase);
+      return s + gaussianSample()*scale;
+    });
+
+    const idxSorted = noisy.map((v,i)=>[v,i]).sort((a,b)=>b[0]-a[0]);
+    const selected = new Set(idxSorted.slice(0,k).map(p=>p[1]));
+
+    const padding = 40;
+    const barAreaW = width - padding*2;
+    const barW = barAreaW / N * 0.55;
+    const gap = barAreaW / N;
+
+    const allVals = noisy.concat(rawScores);
+    const maxV = Math.max(...allVals, 1);
+    const minV = Math.min(...allVals, -1);
+    const range = maxV - minV;
+    const zeroY = height - 30 - ((0 - minV)/range)*(height-60);
+
+    ctx.strokeStyle = '#e3e3e3';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padding, zeroY);
+    ctx.lineTo(width-padding, zeroY);
+    ctx.stroke();
+
+    for(let i=0;i<N;i++){
+      const x = padding + gap*i + gap*0.22;
+      const val = noisy[i];
+      const y = height - 30 - ((val - minV)/range)*(height-60);
+      const barTop = Math.min(y, zeroY);
+      const barH = Math.abs(y - zeroY);
+
+      ctx.fillStyle = selected.has(i) ? '#4183c4' : '#e3e3e3';
+      ctx.fillRect(x, barTop, barW, barH);
+
+      const rawVal = rawScores[i];
+      const ry = height - 30 - ((rawVal - minV)/range)*(height-60);
+      ctx.strokeStyle = '#c0341d';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x-3, ry);
+      ctx.lineTo(x+barW+3, ry);
+      ctx.stroke();
+
+      ctx.fillStyle = '#666';
+      ctx.font = '11px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('e'+(i+1), x+barW/2, height-10);
+    }
+
+    drawCount++;
+    drawCountEl.textContent = 'draws: ' + drawCount;
+  }
+
+  noiseSlider.addEventListener('input', draw);
+  kSlider.addEventListener('input', draw);
+  redrawBtn.addEventListener('click', draw);
+  window.addEventListener('resize', draw);
+  draw();
+})();
+</script>
+
+</body>
+</html>
