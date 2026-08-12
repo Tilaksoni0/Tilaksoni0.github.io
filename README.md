@@ -1,6 +1,6 @@
 # Noisy Top-k Gating and Load Balancing
 
-A Karpathy-style long-form technical blog built from my handwritten notes on Shazeer et al. (2017).
+I took the inspiration from Andrej-Karpathy to write this repo, built from my handwritten notes on Shazeer et al. (2017).
 
 ## Files
 
